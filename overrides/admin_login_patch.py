@@ -11,10 +11,11 @@ ch('web.py','response = await self.public(path, post, values, guest, csrf, ip)',
 ch('web.py',"return card(form('/login', csrf, body, 'Kirish →')) + '<p class=\"center muted\">Hali akkaunt yo‘qmi? <a href=\"/register\">Taklif bilan qo‘shilish</a></p>'","return card(form('/login/telegram', csrf, body, 'Kirish →')) + '<p class=\"center muted\"><a href=\"/login\">Administrator kirishi</a></p>'")
 ch('web.py',"    async def public(self, path, post, values, guest, csrf, ip):\n        if path == '/login':\n","""    def owner_credentials_valid(self, username, password):
         user = os.environ.get('ADMIN_LOGIN_USER', '')
-        pwd = os.environ.get('ADMIN_LOGIN_PASSWORD', '')
-        if not user or len(pwd) < 12: return False
+        pwd = os.environ.get('ADMIN_PASSWORD_HASH', '')
+        if not user or not pwd: return False
         ok_user = hmac.compare_digest(str(username).encode(), user.encode())
-        ok_pwd = hmac.compare_digest(hashlib.sha256(str(password).encode()).digest(), hashlib.sha256(pwd.encode()).digest())
+        from security import pin_verify
+        ok_pwd = pin_verify(password, pwd)
         return ok_user and ok_pwd
 
     def first_setup_valid(self, guest, cookie):
@@ -24,18 +25,22 @@ ch('web.py',"    async def public(self, path, post, values, guest, csrf, ip):\n 
     async def public(self, path, post, values, guest, csrf, ip, setup_cookie=''):
         if path == '/login':
             if post:
-                keys = self.web.rate_keys(ip)
+                keys = self.web.rate_keys(ip, credential='configured-owner')
                 self.web.rate_check(keys)
-                if not self.owner_credentials_valid(values.get('username',''), values.get('password','')):
+                valid = await asyncio.to_thread(self.owner_credentials_valid, values.get('username',''), values.get('password',''))
+                self.web.rate_check(keys)
+                if not valid:
                     self.web.rate_fail(keys)
                     raise SafeError('Login yoki parol noto‘g‘ri.')
-                row = self.web.db.execute('SELECT user_id FROM web_accounts WHERE is_admin=1 LIMIT 1').fetchone()
+                row = self.web.db.execute('SELECT w.user_id FROM web_accounts w JOIN users u ON u.user_id=w.user_id WHERE w.is_admin=1 AND u.telegram_id=? AND w.api_id=?', (os.environ.get('ADMIN_TELEGRAM_ID', ''), os.environ.get('ADMIN_API_ID', ''))).fetchone()
                 if row:
                     session = self.web.create_session(row['user_id'])
                     response = self.cookie(self.redirect('/'), SESSION, session, 43200)
                     self.cookie(response, GUEST, '', 0)
                     self.cookie(response, ADMIN_SETUP, '', 0)
                     return response
+                if self.web.db.execute('SELECT 1 FROM web_accounts WHERE is_admin=1').fetchone():
+                    raise SafeError('Administrator akkaunti belgilangan ID bilan mos emas.')
                 response = self.redirect('/register')
                 self.cookie(response, ADMIN_SETUP, self.web.key('owner-setup:' + guest), 600)
                 return response
@@ -55,9 +60,8 @@ ch('web.py',"        if path == '/register':\n            if post:\n            
 ch('web.py',"            body = '<p class=\"muted\">Sayt egasidan olingan bir martalik taklif kodini kiriting.</p>'","            body = '<p class=\"muted\">Telegram API ma’lumotlarini kiriting.</p>' if first_setup else '<p class=\"muted\">Sayt egasidan olingan bir martalik taklif kodini kiriting.</p>'")
 ch('web.py',"            body += field('invite', 'Taklif kodi', attrs='autocomplete=\"off\" maxlength=\"64\"')","            if not first_setup:\n                body += field('invite', 'Taklif kodi', attrs='autocomplete=\"off\" maxlength=\"64\"')")
 ch('web.py',"                self.cookie(response, GUEST, '', 0)\n                return self.cookie(response, SESSION, session, 43200)","                self.cookie(response, GUEST, '', 0)\n                self.cookie(response, ADMIN_SETUP, '', 0)\n                return self.cookie(response, SESSION, session, 43200)")
-# Run existing API/PIN tests against the preserved legacy login endpoint.
-ch('test_web.py',"r = await self.client.get('/login')","r = await self.client.get('/login/telegram')")
-ch('test_web.py',"await self.client.get('/login')","await self.client.get('/login/telegram')")
-ch('test_web.py',"r = await self.post('/login', {'api_id': '11', 'api_hash': 'a'*32, 'pin': 'PIN123'})","r = await self.post('/login/telegram', {'api_id': '11', 'api_hash': 'a'*32, 'pin': 'PIN123'})")
-ch('test_web.py',"r = await self.post('/login', {'api_id': '11', 'api_hash': 'a'*32, 'pin': ''})","r = await self.post('/login/telegram', {'api_id': '11', 'api_hash': 'a'*32, 'pin': ''})")
+
+# Update the legacy endpoint tests as a file transformation, not a single-match patch.
+p = Path('test_web.py')
+p.write_text(p.read_text().replace("'/login'", "'/login/telegram'"), encoding='utf-8')
 print('admin login patch applied')

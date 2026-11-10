@@ -68,7 +68,7 @@ class Gateway:
         # Public GET navigation may originate in another app/browser tab.
         # Mutations, MCP, and private routes retain strict Origin validation.
         public_navigation = bool(self.panel and scope['method'] == 'GET'
-                                 and scope['path'] in ('/', '/login', '/register'))
+                                 and scope['path'] in ('/', '/login', '/login/telegram', '/register'))
         if origin and origin.decode('latin1') != self.public_url and not public_navigation:
             return await reply(403, 'Manbaga ruxsat yo‘q.')
         if scope['path'] == '/health' and scope['method'] == 'GET':
@@ -275,3 +275,4 @@ if __name__ == '__main__':
                     proxy_headers=True, forwarded_allow_ips=trusted, log_level='warning')
     except SafeError as error:
         print(str(error))
+

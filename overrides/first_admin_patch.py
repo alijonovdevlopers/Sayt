@@ -36,6 +36,11 @@ replace_once("registration.py", """                invite = db.execute('SELECT *
                     raise SafeError('Taklifning muddati tugagan yoki u bekor qilingan.')
 """, """                first_owner = flow['owner'] == '__bootstrap__'
                 if first_owner:
+                    expected_tg = os.environ.get('ADMIN_TELEGRAM_ID', '')
+                    expected_api = os.environ.get('ADMIN_API_ID', '')
+                    if (not expected_tg.isdigit() or not expected_api.isdigit()
+                            or me.id != int(expected_tg) or flow['api_id'] != int(expected_api)):
+                        raise SafeError('Bu Telegram akkaunti administrator uchun belgilanmagan.')
                     initial = os.environ.get('INITIAL_OWNER_INVITE_CODE', '')
                     if (len(initial) < 32 or self.web.key('bootstrap:' + initial) != flow['invite']
                             or db.execute('SELECT 1 FROM web_accounts LIMIT 1').fetchone()
@@ -57,3 +62,4 @@ replace_once("registration.py", """                db.execute('INSERT INTO web_a
                                (uid, flow['owner'], flow['invite']))
 """)
 print("First-owner bootstrap patch applied")
+
