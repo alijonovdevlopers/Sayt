@@ -6,6 +6,6 @@ RUN python -m zipfile -e /tmp/app.zip /app && rm /tmp/app.zip
 WORKDIR /app/tg_userbot_mcp
 RUN pip install -r requirements.lock.txt
 COPY overrides/ ./
-RUN python first_admin_patch.py && python admin_login_patch.py && python check.py
+RUN python first_admin_patch.py && python admin_login_patch.py && python owner_hardening_patch.py && python check.py
 ENV HOST=0.0.0.0 TRUSTED_PROXY=* DATA_DIR=/data
 CMD ["python", "server.py"]
