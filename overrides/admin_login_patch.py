@@ -65,3 +65,6 @@ ch('web.py',"                self.cookie(response, GUEST, '', 0)\n              
 p = Path('test_web.py')
 p.write_text(p.read_text().replace("'/login'", "'/login/telegram'"), encoding='utf-8')
 print('admin login patch applied')
+
+# Preserve same-origin form Origin while suppressing referrers to other sites.
+ch('web.py', "'Referrer-Policy': 'no-referrer'", "'Referrer-Policy': 'same-origin'")
