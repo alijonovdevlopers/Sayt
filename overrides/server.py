@@ -1,5 +1,5 @@
 """Bitta jarayonda HTTPS ortidagi sayt, HTTP MCP va tasdiqlangan amallar ishchisi."""
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from contextvars import ContextVar
 import asyncio
 import fcntl
@@ -46,6 +46,7 @@ class Gateway:
     def __init__(self, downstream, store, public_url, panel=None):
         self.downstream, self.store = downstream, store
         self.panel = panel
+        self.instagram_gateway = None
         from urllib.parse import urlsplit
         self.public_url = public_url
         self.host = urlsplit(public_url).netloc
@@ -68,11 +69,14 @@ class Gateway:
         # Public GET navigation may originate in another app/browser tab.
         # Mutations, MCP, and private routes retain strict Origin validation.
         public_navigation = bool(self.panel and scope['method'] == 'GET'
-                                 and scope['path'] in ('/', '/login', '/login/telegram', '/register'))
+                                 and scope['path'] in ('/', '/login', '/login/telegram', '/register', '/instagram/callback', '/privacy', '/data-deletion'))
         if origin and origin.decode('latin1') != self.public_url and not public_navigation:
             return await reply(403, 'Manbaga ruxsat yo‘q.')
         if scope['path'] == '/health' and scope['method'] == 'GET':
             return await reply(200, 'Server ishlayapti.')
+        if self.instagram_gateway and scope['path'].startswith('/mcp/instagram/'):
+            path = '/mcp/' + scope['path'].removeprefix('/mcp/instagram/')
+            return await self.instagram_gateway(dict(scope, path=path, raw_path=path.encode()), receive, send)
         if self.panel and not scope['path'].startswith('/mcp'):
             return await self.panel(scope, receive, send)
         peer = (scope.get('client') or ('noma_lum', 0))[0]
@@ -139,7 +143,7 @@ class Gateway:
             IDENTITY.reset(token)
 
 
-def build_app(core, public_url, *, cleanup=None, enable_writes=False, vault=None, client_factory=None):
+def build_app(core, public_url, *, cleanup=None, enable_writes=False, vault=None, client_factory=None, enable_portal=False):
     from urllib.parse import urlsplit
     quiet_logs()
     mcp = SafeFastMCP(
@@ -210,14 +214,26 @@ def build_app(core, public_url, *, cleanup=None, enable_writes=False, vault=None
     if vault is not None:
         if not core.actions:
             raise SafeError('Sayt uchun tasdiq navbati kerak.')
-        from web import Panel
+        if enable_portal:
+            from social_panel import SocialPanel as Panel
+        else:
+            from web import Panel
         panel = Panel(core, public_url, vault, client_factory)
+    instagram_mcp = None
+    if panel and enable_portal:
+        from instagram_mcp import build_instagram_mcp
+        instagram_mcp = build_instagram_mcp(panel.instagram, public_url)
     if cleanup or enable_writes:
         @asynccontextmanager
         async def lifecycle(_app):
-            worker, reaper = None, None
+            worker, reaper, link_reaper, ig_reaper = None, None, None, None
             try:
-                async with mcp.session_manager.run():
+                async with AsyncExitStack() as stack:
+                    await stack.enter_async_context(mcp.session_manager.run())
+                    if instagram_mcp:
+                        await stack.enter_async_context(instagram_mcp.session_manager.run())
+                        link_reaper = asyncio.create_task(panel.telegram_link.reaper())
+                        ig_reaper = asyncio.create_task(panel.instagram.maintain())
                     if enable_writes:
                         worker = asyncio.create_task(core.actions.worker())
                     if panel:
@@ -231,10 +247,21 @@ def build_app(core, public_url, *, cleanup=None, enable_writes=False, vault=None
                     reaper.cancel()
                     await asyncio.gather(reaper, return_exceptions=True)
                     await panel.registration.close()
+                if ig_reaper:
+                    ig_reaper.cancel()
+                    await asyncio.gather(ig_reaper, return_exceptions=True)
+                if link_reaper:
+                    link_reaper.cancel()
+                    await asyncio.gather(link_reaper, return_exceptions=True)
+                    await panel.telegram_link.close()
                 if cleanup:
                     await cleanup()
         app.router.lifespan_context = lifecycle
-    return Gateway(app, core.store, public_url, panel)
+    gateway = Gateway(app, core.store, public_url, panel)
+    if instagram_mcp:
+        from instagram_mcp import InstagramTokenStore
+        gateway.instagram_gateway = Gateway(instagram_mcp.streamable_http_app(), InstagramTokenStore(panel.instagram), public_url)
+    return gateway
 
 
 def create_app():
@@ -258,7 +285,7 @@ def create_app():
             os.close(fd)
 
     return build_app(Core(store, pool, settings.data_dir), settings.public_url,
-                     cleanup=cleanup, enable_writes=True, vault=pool.vault)
+                     cleanup=cleanup, enable_writes=True, vault=pool.vault, enable_portal=True)
 
 
 if __name__ == '__main__':
