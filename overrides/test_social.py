@@ -38,7 +38,7 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         self.web=self.panel.web
         self.ig=self.panel.instagram
         self.client=httpx.AsyncClient(transport=httpx.ASGITransport(self.app),base_url='https://example.test')
-        self.env=patch.dict(os.environ,{'INSTAGRAM_APP_ID':'111','INSTAGRAM_APP_SECRET':'test-app-secret','ADMIN_LOGIN_USER':'ExistingOwner'})
+        self.env=patch.dict(os.environ,{'INSTAGRAM_LOGIN_MODE':'instagram','INSTAGRAM_APP_ID':'111','INSTAGRAM_APP_SECRET':'test-app-secret','ADMIN_LOGIN_USER':'ExistingOwner'})
         self.env.start()
         self.calls=[]
         self.ig.transport=httpx.MockTransport(self.meta)
@@ -345,6 +345,119 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
             self.store.user(a)
         self.assertIsNotNone(self.store.user(b))
         self.assertIsNone(self.ig.account(a))
+
+    def unified_transport(self, pages=None, lifetime=None):
+        self.unified_pages = pages if pages is not None else {'': [{'id':'777','username':'unified_test'}]}
+        def handler(request):
+            self.calls.append(request)
+            self.assertEqual(request.url.host, 'graph.facebook.com')
+            path=request.url.path
+            if path.endswith('/oauth/access_token'):
+                self.assertEqual(request.url.params['client_id'],'111')
+                self.assertEqual(request.url.params['client_secret'],'test-app-secret')
+                self.assertEqual(request.url.params['redirect_uri'],'https://example.test/instagram/callback')
+                return httpx.Response(200,json={'access_token':'UNIFIED-SECRET',**({'expires_in':lifetime} if lifetime is not None else {})})
+            self.assertEqual(request.headers['authorization'],'Bearer UNIFIED-SECRET')
+            if path.endswith('/me'):
+                return httpx.Response(200,json={'id':'999'})
+            if path.endswith('/me/assigned_instagram_accounts'):
+                after=request.url.params.get('after','')
+                rows=self.unified_pages.get(after,[])
+                paging={'cursors':{'after':'NEXT'}} if after=='' and 'NEXT' in self.unified_pages else {}
+                return httpx.Response(200,json={'data':rows,'paging':paging})
+            if path.endswith('/777'):
+                self.assertNotIn('user_id',request.url.params.get('fields',''))
+                self.assertNotIn('account_type',request.url.params.get('fields',''))
+                return httpx.Response(200,json={'id':'777','username':'unified_test'})
+            if path.endswith('/777/media'):
+                return httpx.Response(200,json={'data':[{'id':'123'}]})
+            if path.endswith('/777/conversations'):
+                return httpx.Response(200,json={'data':[{'id':'thread:123'}]})
+            # Reuse the fake reply endpoints after asserting the new host.
+            return self.meta(request)
+        self.ig.transport=httpx.MockTransport(handler)
+
+    async def finish_unified(self, uid, session):
+        url=self.ig.begin(uid,session)
+        query=parse_qs(urlsplit(url).query)
+        self.assertEqual(urlsplit(url).netloc,'www.facebook.com')
+        self.assertEqual(query['config_id'],['222'])
+        self.assertEqual(query['override_default_response_type'],['true'])
+        self.assertNotIn('scope',query)
+        self.assertNotEqual(query['state'],['<STATE>'])
+        return await self.ig.complete(query['state'][0],'meta-code',session)
+
+    async def test_unified_exchange_account_routes_and_approved_reply(self):
+        uid=await self.signup(); session=self.signin(uid)
+        self.unified_transport()
+        with patch.dict(os.environ,{'INSTAGRAM_LOGIN_MODE':'unified','INSTAGRAM_CONFIG_ID':'222','INSTAGRAM_TOKEN_LIFETIME':'never'}):
+            await self.finish_unified(uid,session)
+            self.assertEqual(self.ig.account(uid)['expires'],0)
+            self.assertEqual(self.ig.account(uid)['instagram_id'],'777')
+            self.assertEqual(await self.ig.token(uid),'UNIFIED-SECRET')
+            raw=self.store.db.execute('SELECT token_enc FROM instagram_accounts WHERE user_id=?',(uid,)).fetchone()[0]
+            self.assertNotIn(b'UNIFIED-SECRET',raw)
+            await self.ig.call(uid,'instagram_profile',{})
+            await self.ig.call(uid,'instagram_posts',{})
+            await self.ig.call(uid,'instagram_conversations',{})
+            action=await self.ig.call(uid,'instagram_prepare_reply',{'conversation_id':'thread:123','text':'Salom'})
+            aid=self.store.db.execute('SELECT id FROM instagram_actions WHERE user_id=?',(uid,)).fetchone()[0]
+            await self.ig.decide(uid,aid,True)
+            self.assertEqual(self.ig.action(uid,aid)['status'],'done')
+            self.assertFalse(any('refresh_access_token' in r.url.path for r in self.calls))
+            self.assertEqual(sum(r.url.path.endswith('/oauth/access_token') for r in self.calls),1)
+            # Existing tokens retain their provider even if the next-login mode changes.
+        self.assertEqual(self.ig.account_mode(uid),'unified')
+        await self.ig.call(uid,'instagram_profile',{})
+
+    async def test_unified_multiple_accounts_paginated_and_reconnect(self):
+        uid=await self.signup(); session=self.signin(uid)
+        self.unified_transport({'':[{'id':'888','username':'other'}], 'NEXT':[{'id':'777','username':'wanted'}]})
+        with patch.dict(os.environ,{'INSTAGRAM_LOGIN_MODE':'unified','INSTAGRAM_CONFIG_ID':'222','INSTAGRAM_TOKEN_LIFETIME':'never'}):
+            with self.assertRaisesRegex(SafeError,'Bir nechta'):
+                await self.finish_unified(uid,session)
+            self.assertIsNone(self.ig.account(uid))
+            self.connect_fake(uid,'777')
+            await self.finish_unified(uid,session)
+            self.assertEqual(self.ig.account(uid)['instagram_id'],'777')
+            self.assertTrue(any(r.url.params.get('after')=='NEXT' for r in self.calls))
+
+    async def test_unified_expiry_and_missing_asset_fail_closed(self):
+        uid=await self.signup(); session=self.signin(uid)
+        with patch.dict(os.environ,{'INSTAGRAM_LOGIN_MODE':'unified','INSTAGRAM_CONFIG_ID':'222','INSTAGRAM_TOKEN_LIFETIME':''}):
+            self.unified_transport()
+            with self.assertRaisesRegex(SafeError,'muddati'):
+                await self.finish_unified(uid,session)
+            self.unified_transport({'':[]}, lifetime=3600)
+            with self.assertRaisesRegex(SafeError,'ulashilmadi'):
+                await self.finish_unified(uid,session)
+            self.assertIsNone(self.ig.account(uid))
+            self.unified_transport(lifetime=3600)
+            await self.finish_unified(uid,session)
+            self.assertAlmostEqual(self.ig.account(uid)['expires'],time.time()+3600,delta=10)
+            with self.store.db:
+                self.store.db.execute('UPDATE instagram_accounts SET expires=? WHERE user_id=?',(time.time()-1,uid))
+            with self.assertRaises(SafeError):
+                await self.ig.token(uid)
+            self.assertFalse(any('refresh_access_token' in r.url.path for r in self.calls))
+
+    async def test_unified_system_subject_deletion_and_missing_config(self):
+        uid=await self.signup(); session=self.signin(uid)
+        other=await self.signup('bob'); self.connect_fake(other,'888')
+        self.unified_transport()
+        with patch.dict(os.environ,{'INSTAGRAM_LOGIN_MODE':'unified','INSTAGRAM_CONFIG_ID':'222','INSTAGRAM_TOKEN_LIFETIME':'never'}):
+            await self.finish_unified(uid,session)
+            enc=lambda b:base64.urlsafe_b64encode(b).rstrip(b'=').decode()
+            body=enc(json.dumps({'algorithm':'HMAC-SHA256','user_id':'999'}).encode())
+            sig=enc(hmac.new(b'test-app-secret',body.encode(),hashlib.sha256).digest())
+            r=await self.client.post('/instagram/data-deletion',data={'signed_request':sig+'.'+body})
+            self.assertEqual(r.status_code,200)
+            self.assertIsNone(self.ig.account(uid))
+            self.assertIsNotNone(self.ig.account(other))
+            self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM instagram_auth WHERE user_id=?',(uid,)).fetchone()[0],0)
+            with patch.dict(os.environ,{'INSTAGRAM_CONFIG_ID':''}):
+                self.assertFalse(self.ig.configured)
+                with self.assertRaises(SafeError): self.ig.begin(uid,session)
 
 if __name__=='__main__':
     unittest.main()

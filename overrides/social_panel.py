@@ -98,7 +98,7 @@ class SocialPanel(Panel):
         if path == '/instagram':
             ig = self.instagram.account(uid)
             if ig:
-                body = card('<span class="pill live">Ulangan</span><h2>@'+e(ig['username'])+'</h2><p class="muted">Instagram ID: '+e(ig['instagram_id'])+'</p><p class="muted">Ruxsat muddati: '+e(when(ig['expires']))+'</p>')
+                body = card('<span class="pill live">Ulangan</span><h2>@'+e(ig['username'])+'</h2><p class="muted">Instagram ID: '+e(ig['instagram_id'])+'</p><p class="muted">Ruxsat muddati: '+e(when(ig['expires']) if ig['expires'] else 'Muddatsiz; Meta ruxsati bekor qilinishi mumkin')+'</p>')
                 body += card('<h2>ChatGPT / Claude bilan ulash</h2><p class="muted">Shaxsiy MCP havolasini yarating va AI ilovangizning MCP server qo‘shish bo‘limiga kiriting.</p>'+form('/instagram/mcp',csrf,'','MCP havolasini yaratish')+'<p class="muted">Yangi havola avvalgisini bekor qiladi. Havola faqat sizga tegishli.</p>')
                 rows = self.web.db.execute("SELECT id,status,created,expires FROM instagram_actions WHERE user_id=? ORDER BY created DESC LIMIT 30",(uid,)).fetchall()
                 body += card('<h2>Javoblarni tasdiqlash</h2>'+(''.join('<p><a href="/instagram/actions/'+e(r['id'])+'">'+e(when(r['created']))+' · '+e(self.action_status(r))+'</a></p>' for r in rows) or '<p class="muted">AI tayyorlagan javoblar shu yerda tasdiqlanadi.</p>'))
@@ -259,7 +259,7 @@ class SocialPanel(Panel):
         return response
 
     def setup_info(self):
-        return card('<h2>Administrator: Instagram sozlamalari</h2><p class="muted">Meta ilovasida Instagram API with Instagram Login’ni yoqing. Railway Variables’da INSTAGRAM_APP_ID va INSTAGRAM_APP_SECRET ni kiriting. Barcha foydalanuvchilar uchun Meta App Review, kerakli ruxsatlarga Advanced Access va Live rejim talab etiladi.</p><h3>Redirect URI</h3><pre>'+e(self.instagram.callback)+'</pre><h3>Maxfiylik manzili</h3><pre>'+e(self.public_url+'/privacy')+'</pre><h3>Ma’lumotlarni o‘chirish callback</h3><pre>'+e(self.public_url+'/instagram/data-deletion')+'</pre><h3>Deauthorize callback</h3><pre>'+e(self.public_url+'/instagram/deauthorize')+'</pre><p class="muted">Ruxsatlar: instagram_business_basic, instagram_business_manage_messages, instagram_business_manage_comments.</p>')
+        return card('<h2>Administrator: Instagram sozlamalari</h2><p class="muted">Meta ilovasida API setup with Unified login’ni sozlang. Railway Variables’da INSTAGRAM_APP_ID (Meta App ID), INSTAGRAM_CONFIG_ID va INSTAGRAM_APP_SECRET (Meta App Secret) ni kiriting. INSTAGRAM_LOGIN_MODE=unified. Konfiguratsiyada token muddati Never bo‘lsa INSTAGRAM_TOKEN_LIFETIME=never qo‘ying. Barcha foydalanuvchilar uchun Meta App Review, kerakli ruxsatlarga Advanced Access va Live rejim talab etiladi.</p><h3>Redirect URI</h3><pre>'+e(self.instagram.callback)+'</pre><h3>Maxfiylik manzili</h3><pre>'+e(self.public_url+'/privacy')+'</pre><h3>Ma’lumotlarni o‘chirish callback</h3><pre>'+e(self.public_url+'/instagram/data-deletion')+'</pre><h3>Deauthorize callback</h3><pre>'+e(self.public_url+'/instagram/deauthorize')+'</pre><p class="muted">Konfiguratsiya ruxsatlari: instagram_basic, instagram_manage_messages, instagram_manage_comments.</p>')
 
     def privacy(self,path):
         if path=='/data-deletion':
@@ -283,11 +283,13 @@ class SocialPanel(Panel):
             if len(signed)!=1:
                 raise SafeError('Tasdiq kerak.')
             igid=self.instagram.signed_user(signed[0])
-            row=self.web.db.execute('SELECT user_id FROM instagram_accounts WHERE instagram_id=?',(igid,)).fetchone()
-            if row:
+            rows=self.web.db.execute("""SELECT a.user_id, a.instagram_id FROM instagram_accounts a
+                LEFT JOIN instagram_auth m ON m.user_id=a.user_id
+                WHERE a.instagram_id=? OR m.subject_id=?""",(igid,igid)).fetchall()
+            for row in rows:
                 async with self.instagram.locks.setdefault(row['user_id'],asyncio.Lock()):
                     current=self.instagram.account(row['user_id'])
-                    if current and current['instagram_id']==igid:
+                    if current and current['instagram_id']==row['instagram_id']:
                         self.instagram.disconnect(row['user_id'])
             if request.url.path.endswith('/data-deletion'):
                 receipt=secrets.token_urlsafe(24)

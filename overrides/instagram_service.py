@@ -1,4 +1,4 @@
-"""Official Instagram Login / Graph API, encrypted per-tenant tokens and approvals."""
+"""Official Meta Unified Login / Instagram Graph API, encrypted per-tenant tokens and approvals."""
 import asyncio
 import base64
 import hashlib
@@ -29,6 +29,10 @@ class InstagramService:
           instagram_id TEXT UNIQUE NOT NULL, username TEXT NOT NULL,
           token_enc BLOB NOT NULL, expires REAL NOT NULL, refreshed REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS instagram_auth (
+          user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+          mode TEXT NOT NULL, subject_id TEXT NOT NULL, config_id TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS instagram_mcp (
           user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
           token_hash TEXT UNIQUE NOT NULL
@@ -58,7 +62,20 @@ class InstagramService:
 
     @property
     def configured(self):
-        return bool(os.getenv('INSTAGRAM_APP_ID') and os.getenv('INSTAGRAM_APP_SECRET'))
+        return bool(os.getenv('INSTAGRAM_APP_ID') and os.getenv('INSTAGRAM_APP_SECRET')
+                    and (self.login_mode == 'instagram' or os.getenv('INSTAGRAM_CONFIG_ID')))
+
+    @property
+    def login_mode(self):
+        mode = os.getenv('INSTAGRAM_LOGIN_MODE', 'unified')
+        if mode not in ('unified', 'instagram'):
+            raise SafeError('Instagram kirish usuli noto‘g‘ri sozlangan.')
+        return mode
+
+    def account_mode(self, uid):
+        row = self.db.execute('SELECT mode FROM instagram_auth WHERE user_id=?', (uid,)).fetchone()
+        # Existing connections predate Unified Login and retain their original host.
+        return row['mode'] if row else 'instagram'
 
     @property
     def callback(self):
@@ -84,6 +101,11 @@ class InstagramService:
             self.db.execute('DELETE FROM instagram_oauth WHERE user_id=? OR expires<=?', (uid, time.time()))
             self.db.execute('INSERT INTO instagram_oauth VALUES(?,?,?,?)',
                             (self.web.key('ig-state:' + state), uid, self.web.key('session:' + session), time.time()+600))
+        if self.login_mode == 'unified':
+            return 'https://www.facebook.com/dialog/oauth?' + urlencode(dict(
+                client_id=os.environ['INSTAGRAM_APP_ID'], config_id=os.environ['INSTAGRAM_CONFIG_ID'],
+                display='popup', override_default_response_type='true', redirect_uri=self.callback,
+                response_type='code', state=state, prompt='login'))
         return 'https://www.instagram.com/oauth/authorize?' + urlencode(dict(
             client_id=os.environ['INSTAGRAM_APP_ID'], redirect_uri=self.callback,
             response_type='code', scope=','.join(SCOPES), state=state, enable_fb_login='0', force_authentication='1'))
@@ -122,20 +144,26 @@ class InstagramService:
         if not code or len(code) > 4096:
             raise SafeError('Instagram ruxsati berilmadi. Qayta ulashingiz mumkin.')
         async with self.locks.setdefault(uid, asyncio.Lock()):
-            short = await self.http('POST', 'https://api.instagram.com/oauth/access_token', data=dict(
-                client_id=os.environ['INSTAGRAM_APP_ID'], client_secret=os.environ['INSTAGRAM_APP_SECRET'],
-                grant_type='authorization_code', redirect_uri=self.callback, code=code))
-            short = short.get('data', [short])[0]
-            access = short.get('access_token')
-            if not access:
-                raise SafeError('Instagram kirish kalitini bermadi. Qayta ulang.')
-            long = await self.http('GET', 'https://graph.instagram.com/access_token', params=dict(
-                grant_type='ig_exchange_token', client_secret=os.environ['INSTAGRAM_APP_SECRET'], access_token=access))
-            access = long.get('access_token')
-            if not access:
-                raise SafeError('Instagram ulanishini saqlab bo‘lmadi. Qayta ulang.')
-            profile = await self.http('GET', f'https://graph.instagram.com/{self.version}/me',
-                                      params={'fields': 'user_id,username'}, headers={'Authorization': 'Bearer ' + access})
+            mode = self.login_mode
+            subject = ''
+            if mode == 'unified':
+                access, expires, profile, subject = await self.exchange_unified(uid, code)
+            else:
+                short = await self.http('POST', 'https://api.instagram.com/oauth/access_token', data=dict(
+                    client_id=os.environ['INSTAGRAM_APP_ID'], client_secret=os.environ['INSTAGRAM_APP_SECRET'],
+                    grant_type='authorization_code', redirect_uri=self.callback, code=code))
+                short = short.get('data', [short])[0]
+                access = short.get('access_token')
+                if not access:
+                    raise SafeError('Instagram kirish kalitini bermadi. Qayta ulang.')
+                long = await self.http('GET', 'https://graph.instagram.com/access_token', params=dict(
+                    grant_type='ig_exchange_token', client_secret=os.environ['INSTAGRAM_APP_SECRET'], access_token=access))
+                access = long.get('access_token')
+                if not access:
+                    raise SafeError('Instagram ulanishini saqlab bo‘lmadi. Qayta ulang.')
+                profile = await self.http('GET', f'https://graph.instagram.com/{self.version}/me',
+                                          params={'fields': 'user_id,username'}, headers={'Authorization': 'Bearer ' + access})
+                expires = time.time()+min(int(long.get('expires_in', 5184000)), 5184000)
             igid, username = str(profile.get('user_id') or profile.get('id') or ''), profile.get('username')
             if not igid.isdigit() or not username:
                 raise SafeError('Instagram professional akkaunti aniqlanmadi.')
@@ -152,19 +180,75 @@ class InstagramService:
                       ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,token_enc=excluded.token_enc,
                       expires=excluded.expires,refreshed=excluded.refreshed''',
                         (uid, igid, str(username)[:100], self.vault.fernet.encrypt(access.encode()),
-                         time.time()+min(int(long.get('expires_in', 5184000)), 5184000), time.time()))
+                         expires, time.time()))
+                    self.db.execute('INSERT OR REPLACE INTO instagram_auth VALUES(?,?,?,?)',
+                        (uid, mode, subject or igid, os.getenv('INSTAGRAM_CONFIG_ID', '') if mode == 'unified' else ''))
             except sqlite3.IntegrityError:
                 raise SafeError('Bu Instagram boshqa sayt hisobiga ulangan.') from None
             self.web.store.audit(uid, 'instagram_ulash', {}, 'tayyor', 'himoya')
             return uid
 
+    async def exchange_unified(self, uid, code):
+        base = f'https://graph.facebook.com/{self.version}'
+        result = await self.http('GET', base+'/oauth/access_token', params=dict(
+            client_id=os.environ['INSTAGRAM_APP_ID'], client_secret=os.environ['INSTAGRAM_APP_SECRET'],
+            redirect_uri=self.callback, code=code))
+        access = result.get('access_token')
+        if not isinstance(access, str) or not access:
+            raise SafeError('Meta kirish kalitini bermadi. Qayta ulang.')
+        lifetime = result.get('expires_in')
+        if isinstance(lifetime, (int, float)) and lifetime > 0:
+            expires = time.time() + lifetime
+        elif os.getenv('INSTAGRAM_TOKEN_LIFETIME') == 'never':
+            # Zero is an explicit non-expiring configuration, never a guessed 60-day TTL.
+            expires = 0
+        else:
+            raise SafeError('Meta token muddati aniqlanmadi. Konfiguratsiya muddatini tekshiring.')
+        headers = {'Authorization': 'Bearer ' + access}
+        subject = await self.http('GET', base+'/me', params={'fields': 'id'}, headers=headers)
+        subject_id = str(subject.get('id', ''))
+        if not subject_id.isdigit():
+            raise SafeError('Meta tizim foydalanuvchisi aniqlanmadi.')
+        accounts, seen, after = {}, set(), None
+        for _ in range(50):
+            params = {'fields': 'id,username', 'limit': 100}
+            if after:
+                params['after'] = after
+            page = await self.http('GET', base+'/me/assigned_instagram_accounts', params=params, headers=headers)
+            rows = page.get('data')
+            if not isinstance(rows, list):
+                raise SafeError('Instagram akkauntlari ro‘yxati olinmadi.')
+            for row in rows:
+                ident = str(row.get('id', ''))
+                if not ident.isdigit() or not row.get('username'):
+                    raise SafeError('Instagram akkaunti aniqlanmadi.')
+                accounts[ident] = row
+            after = page.get('paging', {}).get('cursors', {}).get('after')
+            if not rows or not after:
+                break
+            if not isinstance(after, str) or len(after) > 2048 or after in seen:
+                raise SafeError('Instagram akkauntlari sahifasi takrorlandi. Qayta ulang.')
+            seen.add(after)
+        else:
+            raise SafeError('Instagram akkauntlari juda ko‘p. Faqat kerakli akkauntni tanlang.')
+        existing = self.account(uid)
+        if existing and existing['instagram_id'] in accounts:
+            profile = accounts[existing['instagram_id']]
+        elif len(accounts) == 1:
+            profile = next(iter(accounts.values()))
+        elif not accounts:
+            raise SafeError('Instagram professional akkaunti ulashilmadi. Meta oynasida akkauntga ruxsat bering.')
+        else:
+            raise SafeError('Bir nechta Instagram tanlangan. Qayta ulab, faqat kerakli bitta akkauntga ruxsat bering.')
+        return access, expires, profile, subject_id
+
     async def token(self, uid):
         self.web.store.assert_active(uid)
         row = self.db.execute('SELECT * FROM instagram_accounts WHERE user_id=?', (uid,)).fetchone()
-        if not row or row['expires'] <= time.time():
+        if not row or (row['expires'] != 0 and row['expires'] <= time.time()):
             raise SafeError('Instagram akkauntingizni saytda ulang yoki qayta ulang.')
         token = self.vault.fernet.decrypt(row['token_enc']).decode()
-        if row['expires'] - time.time() < 14*86400 and time.time() - row['refreshed'] > 86400:
+        if self.account_mode(uid) == 'instagram' and row['expires'] - time.time() < 14*86400 and time.time() - row['refreshed'] > 86400:
             fresh = await self.http('GET', 'https://graph.instagram.com/refresh_access_token',
                                     params={'grant_type': 'ig_refresh_token', 'access_token': token})
             token = fresh['access_token']
@@ -175,7 +259,12 @@ class InstagramService:
 
     async def graph(self, uid, path, *, method='GET', params=None, body=None):
         token = await self.token(uid)
-        return await self.http(method, f'https://graph.instagram.com/{self.version}/{path}',
+        host = 'graph.instagram.com'
+        if self.account_mode(uid) == 'unified':
+            host = 'graph.facebook.com'
+            if path == 'me' or path.startswith('me/'):
+                path = self.account(uid)['instagram_id'] + path[2:]
+        return await self.http(method, f'https://{host}/{self.version}/{path}',
                                params=params, json=body, headers={'Authorization': 'Bearer ' + token})
 
     def rotate(self, uid):
@@ -196,7 +285,7 @@ class InstagramService:
 
     def disconnect(self, uid):
         with self.db:
-            for table in ('instagram_mcp','instagram_oauth','instagram_resources','instagram_actions','instagram_accounts'):
+            for table in ('instagram_mcp','instagram_oauth','instagram_resources','instagram_actions','instagram_auth','instagram_accounts'):
                 self.db.execute(f'DELETE FROM {table} WHERE user_id=?', (uid,))
 
     def remember(self, uid, kind, ids):
@@ -244,7 +333,8 @@ class InstagramService:
         async with self.locks.setdefault(uid, asyncio.Lock()):
             self.web.store.assert_active(uid)
             if tool == 'instagram_profile':
-                return await self.graph(uid, 'me', params={'fields': 'user_id,username,name,account_type,media_count'})
+                fields = 'id,username,name,media_count' if self.account_mode(uid) == 'unified' else 'user_id,username,name,account_type,media_count'
+                return await self.graph(uid, 'me', params={'fields': fields})
             if tool in ('instagram_posts','instagram_conversations','instagram_comments','instagram_messages'):
                 params = self.listing(args.get('limit',20), args.get('after',''))
                 if tool == 'instagram_posts':

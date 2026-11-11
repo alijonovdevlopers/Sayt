@@ -11,7 +11,7 @@ patches. No existing Telegram credentials, database rows, or MCP URLs are replac
   and `/login/telegram` continue to work.
 - `/`: choose Telegram or Instagram. Each service has its own MCP URL.
 - `/telegram`: original dashboard for linked accounts; otherwise Telegram linking.
-- `/instagram`: official Instagram Login, connection, MCP key rotation and reply approvals.
+- `/instagram`: official Meta Unified Login, connection, MCP key rotation and reply approvals.
 - `/account`: site password changes, logout and permanent account deletion.
 
 New site accounts use the existing user identity and separate scrypt password hashes.
@@ -27,18 +27,22 @@ by source code. Until the following variables exist the UI shows a clear setup
 message, without a fake Instagram login button.
 
 1. In Meta for Developers create/configure an app supporting **Instagram API with
-   Instagram Login**. Use the Instagram app ID/secret from the Instagram product.
+   Unified Login**. Create a Facebook Login for Business configuration with Instagram
+   assets. Use the Meta app ID and secret from App settings → Basic.
 2. Set Railway service variables securely (never commit secrets):
    - `INSTAGRAM_APP_ID`
-   - `INSTAGRAM_APP_SECRET`
+   - `INSTAGRAM_APP_SECRET` (server secret; enter securely in Railway)
+   - `INSTAGRAM_CONFIG_ID` (the selected Facebook Login for Business configuration)
+   - `INSTAGRAM_LOGIN_MODE=unified` (default)
+   - `INSTAGRAM_TOKEN_LIFETIME=never` only when the configuration says Never
    - optional `INSTAGRAM_GRAPH_VERSION` (default `v25.0`)
 3. Configure these exact URLs for the current domain:
    - OAuth redirect: `https://tg-userbot-mcp-production.up.railway.app/instagram/callback`
    - Privacy: `https://tg-userbot-mcp-production.up.railway.app/privacy`
    - Data deletion callback: `https://tg-userbot-mcp-production.up.railway.app/instagram/data-deletion`
    - Deauthorization callback: `https://tg-userbot-mcp-production.up.railway.app/instagram/deauthorize`
-4. Request `instagram_business_basic`, `instagram_business_manage_messages`,
-   and `instagram_business_manage_comments`. Test with app-role/test accounts first.
+4. Configure `instagram_basic`, `instagram_manage_messages`,
+   and `instagram_manage_comments` in the configuration. Test with app-role/test accounts first.
 5. To onboard the public, complete Meta's App Review / Advanced Access requirements,
    any required business verification, and enable Live mode. A site's public
    registration alone does not grant Meta production access.
@@ -47,8 +51,17 @@ message, without a fake Instagram login button.
 
 After first successful authorization, a personal `/mcp/instagram/<secret>` URL is
 shown once. It can be added to an MCP-capable ChatGPT/Claude client where supported.
-No Meta access token is placed in the MCP URL. Refresh is attempted when a valid
-long-lived token has fewer than 14 days left; revoked/expired tokens require reconnecting.
+No Meta access token is placed in the MCP URL. Unified Login exchanges the code once
+on graph.facebook.com and discovers assigned Instagram accounts with pagination.
+One selected account is supported per site account; reconnect preserves that account.
+If several new accounts are shared, the user must repeat consent with one account.
+System-user IDs are never used as Instagram IDs. Provider metadata is stored per
+connection; existing legacy Instagram tokens keep their original API host/refresh.
+Unified tokens never use Instagram Login refresh endpoints. A zero expiry means
+the explicitly configured Never lifetime; Meta may still revoke access. Positive
+expiry values are honored, and expired/revoked tokens require reconnection.
+For an existing legacy app only, set INSTAGRAM_LOGIN_MODE=instagram and its Instagram
+product credentials. Do not mix parent Meta and Instagram product credentials.
 OAuth state is single-use, expires in 10 minutes, and is bound to a still-valid site
 session. A short-lived Lax OAuth cookie supports the cross-site return; the main
 session remains Strict.
@@ -91,3 +104,8 @@ python -m unittest discover -q
 The application uses the existing persistent `/data` volume. New tables are additive;
 keep `ENC_KEY`, `MCP_SECRET`, and existing owner variables unchanged. A single worker
 is required, as in the original server.
+
+Unified Login request-contract tests use mocked Meta responses. Real consent and
+API access still require an App Secret, an app-role Instagram account, and a live
+end-to-end test. MCP reads fetch data on demand; this version does not ingest
+Instagram webhook events or claim Meta App Review approval.
