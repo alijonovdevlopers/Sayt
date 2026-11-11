@@ -20,7 +20,7 @@ from security import SafeError, Vault
 from storage import Store
 from telegram_adapter import ClientPool
 from server import build_app
-from social_panel import OAUTH
+from social_panel import OAUTH, BLOCKED
 from web import SESSION
 from test_web import FakeLogin, value
 
@@ -149,11 +149,11 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         uid=await self.signup()
         token=self.signin(uid)
         r=await self.post('/instagram/connect',token)
-        self.assertEqual(r.status_code,200)
-        self.assertNotIn('location',r.headers)
-        self.assertIn("form-action 'self'",r.headers['content-security-policy'])
+        self.assertEqual(r.status_code,303)
+        self.assertIn('location',r.headers)
+        self.assertIn("form-action 'self' https://www.instagram.com https://www.facebook.com",r.headers['content-security-policy'])
         self.assertIn('SameSite=lax',r.headers['set-cookie'])
-        destination=unescape(re.search(r'id="instagram-oauth-continue"[^>]*href="([^"]+)"',r.text).group(1))
+        destination=r.headers['location']
         self.assertTrue(destination.startswith('https://www.instagram.com/oauth/authorize?'))
         self.assertNotIn('test-app-secret',r.text)
         state=parse_qs(urlsplit(destination).query)['state'][0]
@@ -289,6 +289,89 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(r.status_code,200,r.text)
             self.assertIn('101',r.text)
 
+    async def test_admin_stats_blocking_with_telegram_contact_and_messaging(self):
+        from test_core import FakeAdapter
+        admin_uid, _ = self.store.create_user('OwnerPIN', 101)
+        self.web.add_profile(admin_uid, 11, 'a'*32, 'Existing owner')
+        self.web.bootstrap_admin(admin_uid)
+        self.pool.clients[admin_uid] = FakeAdapter(101)
+        alice = await self.signup('alice', 'ip-1')
+        bob = await self.signup('bob', 'ip-2')
+        self.connect_fake(alice, '777')
+
+        admin_token = self.signin(admin_uid)
+        r = await self.client.get('/admin')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('Jami foydalanuvchilar', r.text)
+        self.assertIn('Foydalanuvchilarga xabar yuborish', r.text)
+        self.assertIn('@alice', r.text)
+        self.assertIn('@bob', r.text)
+
+        # Send broadcast message and personal message to Alice
+        r = await self.post('/admin/message/send', admin_token, target='all', title='Umumiy yangilik', message='Barchaga e’lon matni')
+        self.assertEqual(r.status_code, 303)
+        r = await self.post('/admin/message/send', admin_token, target=alice, title='Shaxsiy xabar', message='Faqat Alice uchun')
+        self.assertEqual(r.status_code, 303)
+
+        # Verify Alice sees both messages on / and /messages
+        alice_token = self.signin(alice)
+        r = await self.client.get('/')
+        self.assertIn('Xabarlar (2)', r.text)
+        self.assertIn('Umumiy yangilik', r.text)
+        self.assertIn('Shaxsiy xabar', r.text)
+        r = await self.client.get('/messages')
+        self.assertEqual(r.status_code, 200)
+        self.assertIn('Faqat Alice uchun', r.text)
+        r = await self.post('/messages/read-all', alice_token)
+        self.assertEqual(r.status_code, 303)
+        self.assertEqual(self.panel.admin_service.unread_count(alice), 0)
+
+        # Verify Bob only sees the broadcast message, never Alice's personal message
+        bob_token = self.signin(bob)
+        r = await self.client.get('/')
+        self.assertIn('Xabarlar (1)', r.text)
+        self.assertIn('Umumiy yangilik', r.text)
+        self.assertNotIn('Faqat Alice uchun', r.text)
+
+        # Admin blocks Bob while Bob has an active session
+        admin_token = self.signin(admin_uid)
+        r = await self.post('/admin/user/' + bob + '/block', admin_token)
+        self.assertEqual(r.status_code, 303)
+        self.assertIsNone(self.web.resolve_session(bob_token))
+
+        # Bob visits site with his old session cookie -> sees blocked screen with @alijonov_aex under Admin
+        self.client.cookies.clear()
+        self.client.cookies.set(SESSION, bob_token, domain='example.test', path='/')
+        r = await self.client.get('/')
+        self.assertEqual(r.status_code, 403)
+        self.assertIn('Siz saytga kira olmaysiz, iltimos adminga murojaat qiling', r.text)
+        self.assertIn('<h3>Admin</h3>', r.text)
+        self.assertIn('https://t.me/alijonov_aex', r.text)
+        self.assertIn('@alijonov_aex', r.text)
+
+        # Bob tries to log in on a fresh browser at /login -> also sees blocked screen and cannot enter
+        self.client.cookies.clear()
+        login_page = await self.client.get('/login')
+        r = await self.client.post('/login', data={'csrf': value(login_page.text, 'csrf'), 'username': 'bob', 'password': 'Password123!'}, headers={'Origin': 'https://example.test'})
+        self.assertEqual(r.status_code, 403)
+        self.assertIn('Siz saytga kira olmaysiz, iltimos adminga murojaat qiling', r.text)
+        self.assertIn('@alijonov_aex', r.text)
+        self.assertTrue(self.client.cookies.get(BLOCKED))
+        # Subsequent GET / on Bob's browser still shows blocked screen
+        r = await self.client.get('/')
+        self.assertEqual(r.status_code, 403)
+        self.assertIn('@alijonov_aex', r.text)
+
+        # Admin unblocks Bob -> Bob can log in again
+        admin_token = self.signin(admin_uid)
+        r = await self.post('/admin/user/' + bob + '/unblock', admin_token)
+        self.assertEqual(r.status_code, 303)
+        self.client.cookies.clear()
+        login_page = await self.client.get('/login')
+        r = await self.client.post('/login', data={'csrf': value(login_page.text, 'csrf'), 'username': 'bob', 'password': 'Password123!'}, headers={'Origin': 'https://example.test'})
+        self.assertEqual(r.status_code, 303)
+        self.assertEqual((await self.client.get('/')).status_code, 200)
+
     async def test_duplicate_instagram_link_cannot_move_other_tenant(self):
         a,b=await self.signup('alice'),await self.signup('bob')
         self.connect_fake(a)
@@ -379,16 +462,15 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
                 return httpx.Response(200,json={'data':[{'id':'123'}]})
             if path.endswith('/777/conversations'):
                 return httpx.Response(200,json={'data':[{'id':'thread:123'}]})
-            # Reuse the fake reply endpoints after asserting the new host.
             return self.meta(request)
         self.ig.transport=httpx.MockTransport(handler)
 
     async def finish_unified(self, uid, session):
         response=await self.post('/instagram/connect',session)
-        self.assertEqual(response.status_code,200)
-        self.assertNotIn('location',response.headers)
-        self.assertIn("form-action 'self'",response.headers['content-security-policy'])
-        url=unescape(re.search(r'id="instagram-oauth-continue"[^>]*href="([^"]+)"',response.text).group(1))
+        self.assertEqual(response.status_code,303)
+        self.assertIn('location',response.headers)
+        self.assertIn("form-action 'self' https://www.instagram.com https://www.facebook.com",response.headers['content-security-policy'])
+        url=response.headers['location']
         query=parse_qs(urlsplit(url).query)
         self.assertEqual(urlsplit(url).netloc,'www.facebook.com')
         self.assertEqual(query['config_id'],['222'])
@@ -416,7 +498,6 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.ig.action(uid,aid)['status'],'done')
             self.assertFalse(any('refresh_access_token' in r.url.path for r in self.calls))
             self.assertEqual(sum(r.url.path.endswith('/oauth/access_token') for r in self.calls),1)
-            # Existing tokens retain their provider even if the next-login mode changes.
         self.assertEqual(self.ig.account_mode(uid),'unified')
         await self.ig.call(uid,'instagram_profile',{})
 

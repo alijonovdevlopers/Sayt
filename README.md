@@ -9,10 +9,14 @@ patches. No existing Telegram credentials, database rows, or MCP URLs are replac
 - `/register`: choose a username and password, without a Telegram account or invite.
 - `/login`: log in using the new credentials; existing configured owner credentials
   and `/login/telegram` continue to work.
-- `/`: choose Telegram or Instagram. Each service has its own MCP URL.
+- `/`: choose Telegram or Instagram, and view unread messages/announcements from Admin. Each service has its own MCP URL.
 - `/telegram`: original dashboard for linked accounts; otherwise Telegram linking.
-- `/instagram`: official Meta Unified Login, connection, MCP key rotation and reply approvals.
+- `/instagram`: official Meta Unified Login / Instagram Login with direct 303 OAuth redirect, connection, MCP key rotation and reply approvals.
+- `/messages`: view personal messages and broadcast announcements sent by the Administrator, and mark them as read.
 - `/account`: site password changes, logout and permanent account deletion.
+- `/admin`: platform statistics, user management (blocking/unblocking), personal and broadcast in-app messaging, and one-time Telegram invites.
+
+Blocked accounts cannot access the site or MCP endpoints; when visiting the site or attempting to log in, blocked users see the restriction screen (`Siz saytga kira olmaysiz, iltimos adminga murojaat qiling`) with the Administrator's Telegram link (`@alijonov_aex` under `Admin`).
 
 New site accounts use the existing user identity and separate scrypt password hashes.
 Telegram linking adds its verified Telegram identity and separate Telegram PIN to

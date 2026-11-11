@@ -7,6 +7,7 @@ import sqlite3
 import time
 import uuid
 
+from admin_service import BlockedAccountError
 from security import SafeError, SYSTEM, pin_hash, pin_verify
 
 
@@ -78,9 +79,13 @@ class SiteAccounts:
         async with self.hash_slots:
             valid = await asyncio.to_thread(pin_verify, password, encoded)
         self.web.rate_check(keys)
-        if not valid or not row or self.web.store.user(row['user_id'])['blocked']:
+        if not valid or not row:
             self.web.rate_fail(keys)
+            if row and self.web.store.user(row['user_id'])['blocked']:
+                raise BlockedAccountError(row['user_id'])
             raise SafeError('Login yoki parol noto‘g‘ri yoki hisob yopilgan.')
+        if self.web.store.user(row['user_id'])['blocked']:
+            raise BlockedAccountError(row['user_id'])
         return self.web.create_session(row['user_id'])
 
     async def change(self, uid, current, password, confirm, ip):
