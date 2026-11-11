@@ -20,17 +20,6 @@ LINK = '__Host-tg_link'
 BLOCKED = '__Host-tg_blocked'
 
 
-def social_headers():
-    h = dict(HEADERS)
-    for k in ('Content-Security-Policy', 'content-security-policy'):
-        if k in h and "form-action 'self'" in h[k]:
-            h[k] = h[k].replace(
-                "form-action 'self'",
-                "form-action 'self' https://www.instagram.com https://www.facebook.com"
-            )
-    return h
-
-
 class SocialPanel(Panel):
     def __init__(self, core, public_url, vault, client_factory=None):
         super().__init__(core, public_url, vault, client_factory)
@@ -57,7 +46,7 @@ class SocialPanel(Panel):
             )
             html = html.replace('<main id="main"', nav + '<main id="main"')
         html = html.replace('<footer>', '<footer><div><a href="/privacy">Maxfiylik</a> · <a href="/data-deletion">Ma’lumotlarni o‘chirish</a></div>')
-        return HTMLResponse(html, status_code=code, headers=social_headers())
+        return HTMLResponse(html, status_code=code, headers=HEADERS)
 
     def blocked_page(self, uid=None):
         body = card(
@@ -66,6 +55,7 @@ class SocialPanel(Panel):
             '<p class="muted">Hisobingiz sayt administratori tomonidan cheklangan. Murojaat uchun quyidagi Telegram manziliga yozing:</p>'
             '<h3>Admin</h3>'
             '<p><a class="button" href="https://t.me/alijonov_aex" target="_blank" rel="noreferrer">@alijonov_aex</a></p>'
+            '<p class="center muted"><a href="/login?switch=1">Boshqa hisobga kirish</a></p>'
         )
         response = self.page('Kirish cheklangan', body, code=403)
         self.cookie(response, SESSION, '', 0)
@@ -85,14 +75,18 @@ class SocialPanel(Panel):
             return await self.meta_callback(request)
         if path == '/instagram/callback':
             return await self.oauth_callback(request)
-        if not (request.method == 'POST' and path in ('/login', '/login/telegram')):
+        switching = request.method == 'GET' and path == '/login' and request.query_params.get('switch') == '1'
+        if not switching and not (request.method == 'POST' and path in ('/login', '/login/telegram')):
             b_uid = (self.admin_service.is_blocked_session(request.cookies.get(SESSION, ''))
                      or self.admin_service.resolve_blocked_cookie(request.cookies.get(BLOCKED, '')))
             if b_uid:
                 return self.blocked_page(b_uid)
         if path.startswith('/telegram/connect'):
             return await self.link_handle(request)
-        return await super().handle(request)
+        response = await super().handle(request)
+        if switching:
+            self.cookie(response, BLOCKED, '', 0)
+        return response
 
     async def public(self, path, post, values, guest, csrf, ip, setup_cookie=''):
         if path == '/login':
@@ -189,7 +183,7 @@ class SocialPanel(Panel):
             elif not self.instagram.configured:
                 body = card('<h2>Instagram’ni ulash</h2>' + note('Instagram ulanishi tayyorlanmoqda. Sayt egasi Meta ulanishini sozlagach, shu yerda akkauntingizni ulaysiz.') + '<p class="muted">Business yoki Creator akkaunt qo‘llanadi. Instagram paroli Instagram’ning o‘z oynasida kiritiladi.</p>')
             else:
-                body = card('<h2>Instagram’ni ulash</h2><p class="muted">Tugmani bosganingizda to‘g‘ridan-to‘g‘ri rasmiy OAuth oynasiga o‘tasiz va Business yoki Creator akkauntingizga ruxsat berasiz. Parolingiz bu saytga berilmaydi.</p>' + form('/instagram/connect', csrf, '', 'Instagram orqali kirish →'))
+                body = card('<h2>Instagram’ni ulash</h2><p class="muted">Instagram oynasida Business yoki Creator akkauntingizga kiring va ruxsat bering. Parolingiz bu saytga berilmaydi.</p>' + form('/instagram/connect', csrf, '', 'Instagram orqali kirish →'))
             if p['is_admin']:
                 body += self.setup_info()
             return self.page('Instagram', body, p, path, csrf)
@@ -304,12 +298,12 @@ class SocialPanel(Panel):
     async def mutate(self, path, values, p, token, csrf, ip):
         uid = p['user_id']
         if path == '/instagram/connect':
-            # Direct 303 redirect to OAuth window without any intermediate handoff page.
+            # A cross-origin 303 after POST can be blocked by form-action 'self'
+            # in Chrome. Finish the same-origin POST, then navigate from a new
+            # document via panel.js window.location.replace, with a fallback button.
             destination = self.instagram.begin(uid, token)
-            response = self.redirect(destination)
-            for k, v in social_headers().items():
-                if k.lower() == 'content-security-policy':
-                    response.headers[k] = v
+            body = card('<h2>Instagram’da davom etish</h2><p>Kirish oynasi ochilmoqda. Avtomatik ochilmasa, quyidagi tugmani bosing.</p><a id="instagram-oauth-continue" class="button" rel="noreferrer" href="' + e(destination) + '">Instagram’da davom etish →</a><p class="muted">Agar oyna ochilmasa, brauzer menyusidan Chrome’da ochishni tanlang va shu tugmani bosing.</p>')
+            response = self.page('Instagram’ga o‘tish', body, p, '/instagram', csrf)
             response.set_cookie(OAUTH, token, max_age=600, httponly=True, secure=True, samesite='lax', path='/')
             return response
         if path == '/instagram/mcp':

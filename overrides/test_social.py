@@ -149,11 +149,11 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         uid=await self.signup()
         token=self.signin(uid)
         r=await self.post('/instagram/connect',token)
-        self.assertEqual(r.status_code,303)
-        self.assertIn('location',r.headers)
-        self.assertIn("form-action 'self' https://www.instagram.com https://www.facebook.com",r.headers['content-security-policy'])
+        self.assertEqual(r.status_code,200)
+        self.assertNotIn('location',r.headers)
+        self.assertIn("form-action 'self'",r.headers['content-security-policy'])
         self.assertIn('SameSite=lax',r.headers['set-cookie'])
-        destination=r.headers['location']
+        destination=unescape(re.search(r'id="instagram-oauth-continue"[^>]*href="([^"]+)"',r.text).group(1))
         self.assertTrue(destination.startswith('https://www.instagram.com/oauth/authorize?'))
         self.assertNotIn('test-app-secret',r.text)
         state=parse_qs(urlsplit(destination).query)['state'][0]
@@ -361,6 +361,9 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         r = await self.client.get('/')
         self.assertEqual(r.status_code, 403)
         self.assertIn('@alijonov_aex', r.text)
+        # Switching account link clears BLOCKED cookie
+        r = await self.client.get('/login?switch=1')
+        self.assertEqual(r.status_code, 200)
 
         # Admin unblocks Bob -> Bob can log in again
         admin_token = self.signin(admin_uid)
@@ -467,10 +470,10 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
 
     async def finish_unified(self, uid, session):
         response=await self.post('/instagram/connect',session)
-        self.assertEqual(response.status_code,303)
-        self.assertIn('location',response.headers)
-        self.assertIn("form-action 'self' https://www.instagram.com https://www.facebook.com",response.headers['content-security-policy'])
-        url=response.headers['location']
+        self.assertEqual(response.status_code,200)
+        self.assertNotIn('location',response.headers)
+        self.assertIn("form-action 'self'",response.headers['content-security-policy'])
+        url=unescape(re.search(r'id="instagram-oauth-continue"[^>]*href="([^"]+)"',response.text).group(1))
         query=parse_qs(urlsplit(url).query)
         self.assertEqual(urlsplit(url).netloc,'www.facebook.com')
         self.assertEqual(query['config_id'],['222'])
