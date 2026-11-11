@@ -104,7 +104,7 @@ class InstagramService:
         if self.login_mode == 'unified':
             return 'https://www.facebook.com/dialog/oauth?' + urlencode(dict(
                 client_id=os.environ['INSTAGRAM_APP_ID'], config_id=os.environ['INSTAGRAM_CONFIG_ID'],
-                display='popup', override_default_response_type='true', redirect_uri=self.callback,
+                override_default_response_type='true', redirect_uri=self.callback,
                 response_type='code', state=state, prompt='login'))
         return 'https://www.instagram.com/oauth/authorize?' + urlencode(dict(
             client_id=os.environ['INSTAGRAM_APP_ID'], redirect_uri=self.callback,
