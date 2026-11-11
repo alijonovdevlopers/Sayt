@@ -142,7 +142,12 @@ class SocialPanel(Panel):
     async def mutate(self,path,values,p,token,csrf,ip):
         uid=p['user_id']
         if path=='/instagram/connect':
-            response=self.redirect(self.instagram.begin(uid,token))
+            # A cross-origin 303 after POST can be blocked by form-action 'self'
+            # in Chrome. Finish the same-origin POST, then navigate from a new
+            # document. Keep a normal link available when automatic navigation fails.
+            destination=self.instagram.begin(uid,token)
+            body=card('<h2>Instagram’da davom etish</h2><p>Kirish oynasi ochilmoqda. Avtomatik ochilmasa, quyidagi tugmani bosing.</p><a id="instagram-oauth-continue" class="button" rel="noreferrer" href="'+e(destination)+'">Instagram’da davom etish →</a><p class="muted">Agar oyna ochilmasa, brauzer menyusidan Chrome’da ochishni tanlang va shu tugmani bosing.</p>')
+            response=self.page('Instagram’ga o‘tish',body,p,'/instagram',csrf)
             response.set_cookie(OAUTH,token,max_age=600,httponly=True,secure=True,samesite='lax',path='/')
             return response
         if path=='/instagram/mcp':

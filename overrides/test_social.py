@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+from html import unescape
 import json
 import os
 from pathlib import Path
@@ -148,9 +149,14 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         uid=await self.signup()
         token=self.signin(uid)
         r=await self.post('/instagram/connect',token)
-        self.assertEqual(r.status_code,303)
+        self.assertEqual(r.status_code,200)
+        self.assertNotIn('location',r.headers)
+        self.assertIn("form-action 'self'",r.headers['content-security-policy'])
         self.assertIn('SameSite=lax',r.headers['set-cookie'])
-        state=parse_qs(urlsplit(r.headers['location']).query)['state'][0]
+        destination=unescape(re.search(r'id="instagram-oauth-continue"[^>]*href="([^"]+)"',r.text).group(1))
+        self.assertTrue(destination.startswith('https://www.instagram.com/oauth/authorize?'))
+        self.assertNotIn('test-app-secret',r.text)
+        state=parse_qs(urlsplit(destination).query)['state'][0]
         bad=await self.signup('bob')
         wrong=self.web.create_session(bad)
         with self.assertRaises(SafeError):
@@ -378,7 +384,11 @@ class SocialTests(unittest.IsolatedAsyncioTestCase):
         self.ig.transport=httpx.MockTransport(handler)
 
     async def finish_unified(self, uid, session):
-        url=self.ig.begin(uid,session)
+        response=await self.post('/instagram/connect',session)
+        self.assertEqual(response.status_code,200)
+        self.assertNotIn('location',response.headers)
+        self.assertIn("form-action 'self'",response.headers['content-security-policy'])
+        url=unescape(re.search(r'id="instagram-oauth-continue"[^>]*href="([^"]+)"',response.text).group(1))
         query=parse_qs(urlsplit(url).query)
         self.assertEqual(urlsplit(url).netloc,'www.facebook.com')
         self.assertEqual(query['config_id'],['222'])
