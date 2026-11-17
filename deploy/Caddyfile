@@ -1,0 +1,8 @@
+# SIZNING.DOMEN.UZ ni o'z domeningizga almashtiring
+SIZNING.DOMEN.UZ {
+	reverse_proxy 127.0.0.1:8000
+	# Maxfiy MCP yo'li logga tushmasin
+	log {
+		output discard
+	}
+}

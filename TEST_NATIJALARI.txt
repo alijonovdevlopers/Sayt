@@ -1,0 +1,75 @@
+TELEGRAM MCP V3 — 3-BOSQICH SAYT PANELI
+Sana: 2026-11-09 (Toshkent)
+
+ASOS VA MOSLIK
+Asos: foydalanuvchi yuborgan v1 asosida tayyorlangan tg_userbot_mcp_v2.zip.
+Avvalgi 126 ta test saqlandi. Yangi test_web.py: 44 ta sinov.
+Jami: 170 ta test, 0 xato, 0 muvaffaqiyatsiz.
+33 ta Python faylining barchasi py_compile tekshiruvidan o‘tdi.
+JavaScript: node --check assets/panel.js muvaffaqiyatli.
+Telethon/MCPsiz: python -S -m unittest -v test_core test_actions — 73 test o‘tdi.
+
+Muhit: Python 3.12.14, Linux x86_64. MCP 1.29.0, Telethon 1.45.0,
+Starlette 1.10.0, uvicorn 0.54.0, cryptography 50.0.2.
+requirements.txt va lock fayli v2 bilan bir xil. Yangi paket qo‘shilmadi.
+
+YANGI SINOVLAR QAMROVI
+- API ID/hash + PIN kirishi; API hashning o‘zi yetarli emas.
+- Cookie Secure, HttpOnly, SameSite=Strict, Path=/; serverda token faqat HMAC.
+- CSRF: yo‘q, noto‘g‘ri va boshqa sessiyaniki rad etiladi.
+- HTTPS, Host, Origin; JSON, takroriy forma kalitlari va katta body rad etiladi.
+- 5 xato urinishdan keyin IP va akkaunt 15 daqiqa bloklanadi, keyin ochiladi.
+- Sayt sessiyasi aniq 12 soatda tugaydi; logout server sessiyasini ham o‘chiradi.
+- Begona foydalanuvchining amal sahifasi, Ruxsat/Rad, navbati, jurnali,
+  profil/sessiya/MCP manzili, stop/resume, PIN va admin huquqlari ajratilgan.
+  Ushbu ajratishlar uchun test_web.pyda 8 ta alohida test bor.
+- Aniq saqlangan parametrlar HTMLdan escape qilinadi; access_hash ko‘rsatilmaydi.
+- HTTP formadagi Ruxsat -> haqiqiy server lifecycle ishchisi -> Bajarildi.
+  Telegram bajarishi soxta adapter bilan. Bir amal takror bajarilmaydi.
+- Ommaviy amalda ikkinchi sahifa, uid/amal/digestga bog‘langan qisqa muddatli
+  imzoli tasdiq va checkbox; oddiy Ruxsatning o‘zi yetmaydi.
+- Amal parametrlari o‘zgarsa yoki 10 daqiqa o‘tsa tasdiq rad etiladi.
+- Stop faqat o‘z amallarini bekor qiladi; A/B yopiladi; resume PIN talab qiladi.
+- PIN o‘zgarishi boshqa sayt seanslarini bekor qiladi; MCP aylantirish faqat
+  o‘z manzilini yangilaydi, eski manzil ishlamaydi, yangi manzil qayta ko‘rsatilmaydi.
+- Jurnal filtrlarida maxfiy parametrlar yo‘q.
+- Birinchi adminni faqat bir marta belgilash; oddiy foydalanuvchiga admin yopiq.
+- Taklif: bir marta ko‘rsatish, muddati, rezervatsiya, qayta ishlatish va bekor qilish.
+- Bloklash eski cookie va MCP yo‘lini yopadi, navbatni bekor qiladi.
+- Saytdan o‘chirish PIN bilan, barcha tegishli baza yozuvi/fayllarni o‘chiradi;
+  faqat mijoz disconnect qilinadi, Telegram akkaunti yoki boshqa sessiya o‘chmaydi.
+- O‘chirish faol o‘qishni kutadi, ishlayotgan yozish ishchisini avval to‘xtatadi.
+- Taklifsiz Telegramga kod yuborilmaydi. Kodli va 2FAli ro‘yxatdan o‘tish.
+- Ro‘yxatdan keyin bir xil mijoz poolga beriladi, yangi ikkinchi mijoz ochilmaydi.
+- Diskda sessiya/hash shifrlangan; kod, telefon va 2FA paroli chiqarilmaydi.
+- 5 xato kod, eskirgan oyna, bekor qilish, FloodWait, bekor qilingan taklif,
+  takroriy Telegram akkaunti, eski bir APIli profillarning kirishi.
+- Barcha asosiy sahifalar 200, bitta h1, POST formalarida CSRF; faqat ruxsat
+  etilgan CSS/JS fayllari beriladi. HTML tuzilmasi tekshirildi.
+
+BRAUZER SINOVI HOLATI — BAJARILMAGAN
+Chromium/Playwright sinovi ishga tushirishda socket() Operation not permitted
+bilan to‘xtadi. Mavjud brauzerda mahalliy HTML ko‘rish ham URL siyosati bilan
+bloklandi. Cheklov aylanib o‘tilmadi. Shuning uchun vizual joylashuv, gorizontal
+siljish, clipboard va haqiqiy telefon brauzeridagi bosishlar TASDIQLANMAGAN.
+HTTP/ASGI formalar sinovi brauzer sinovi o‘rnida ko‘rsatilmagan.
+Mobil CSS, katta tugmalar va pastki menyu yozildi; qo‘lda ko‘rish ro‘yxati READMEda.
+
+SINALMAGAN
+- Haqiqiy Telegram kodi/2FA, yuborish, o‘chirish va guruh huquqlari.
+- Haqiqiy foydalanuvchi sessiyasini ko‘chirish (asos ZIPda sessiya bo‘lmagan).
+- Tashqi HTTPS/Cloudflare, Oracle ARM, Docker, 24/7 ishlash.
+- Claude/ChatGPT ilovasidan ulanish va OAuth mosligi.
+- Visual brauzer va jismoniy Android qurilma sinovi.
+
+KUTUBXONA OGOHLANTIRISHLARI
+MCP/pydantic-settings lifespan forward annotation ogohlantirishi va ba’zi
+asyncio sekin vazifa diagnostikasi xom jurnalda saqlangan. Testlar va lifecycle
+muvaffaqiyatli; bu ogohlantirishlar yashirilmadi.
+
+ZIP faqat v2dan o‘zgargan/yangi fayllardan iborat; v2 ustiga chiqaring.
+.env, baza, haqiqiy sessiyalar va ichki brauzer maketlari kiritilmagan.
+O‘zgargan fayllar OZGARISHLAR.md, xom test chiqishi SINOV_JURNALI.txt ichida.
+170 test ishlab chiqarishdagi barcha xatolar yo‘qligi kafolati emas.
+
+3-bosqich kodi yakunlandi. 4-bosqich (joylash) foydalanuvchi tasdig‘idan keyin.

@@ -1,0 +1,17 @@
+[Unit]
+Description=Telegram MCP server (sayt paneli + MCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tg_userbot_mcp
+ExecStart=/home/ubuntu/tg_userbot_mcp/.venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
