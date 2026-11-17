@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import time
@@ -21,6 +22,28 @@ EMAIL_RE = re.compile(r'[a-z0-9._%+\-]{1,64}@[a-z0-9\-]+(\.[a-z0-9\-]+)*\.[a-z]{
 FLOW_SECONDS = 600
 TICKET_SECONDS = 1800
 MAX_USERS = 50
+TOKEN_ERRORS = {
+    'invalid_client': 'Google ilova kalitlarini qabul qilmadi. Client ID va Client secret juftligini tekshiring.',
+    'invalid_grant': 'Google kirish kodi yaroqsiz yoki eskirgan. Kirish sahifasidan qayta boshlang.',
+    'redirect_uri_mismatch': 'Google qaytish manzili mos emas. Authorized redirect URIs sozlamasini tekshiring.',
+    'unauthorized_client': 'Bu Google ilovasiga ushbu kirish usuli uchun ruxsat berilmagan.',
+    'invalid_request': 'Google kirish so‘rovi parametrlarini qabul qilmadi.',
+    'deleted_client': 'Google OAuth ilovasi o‘chirilgan.',
+}
+
+
+def token_error(response):
+    # Faqat tanilgan kodni chiqaramiz; javob matnida maxfiy qiymatlar bo‘lishi mumkin.
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    code = payload.get('error') if isinstance(payload, dict) else None
+    code = code if isinstance(code, str) and code in TOKEN_ERRORS else 'unknown'
+    logging.getLogger(__name__).warning(
+        'Google token exchange failed: status=%s error=%s', response.status_code, code)
+    message = TOKEN_ERRORS.get(code, 'Google kirishni qabul qilmadi. Qayta urining.')
+    return SafeError(message + ' [Google: ' + code + '; HTTP ' + str(response.status_code) + ']')
 
 
 def schema(db):
@@ -51,7 +74,7 @@ class Http:
         async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             response = await client.post(url, data=data)
         if response.status_code != 200:
-            raise SafeError('Google kirishni qabul qilmadi. Qayta urining.')
+            raise token_error(response)
         return response.json()
 
     async def get_json(self, url, access_token):
@@ -212,3 +235,4 @@ class GoogleAuth:
     def listing(self):
         return [dict(r) for r in self.db.execute(
             'SELECT email,user_id,blocked,added FROM web_google ORDER BY added')]
+
